@@ -21,6 +21,12 @@
 
 (def ymd (clj-time-format/formatter "yyyy-MM-dd"))
 
+; Dates for these ranges shouldn't be served.
+; This allows a user to follow pagination links back in time blindly in the past.
+; It also makes sure we don't serve up a response for data not yet collected (tomorrow).
+(defn earliest-date [] (clj-time/date-time 2016 01 01))
+(defn latest-date [] (clj-time/today-at 0 0))
+
 (defn prev-date-str [date-str]
   (clj-time-format/unparse ymd (clj-time/minus (clj-time-format/parse ymd date-str) (clj-time/days 1))))
 
@@ -57,6 +63,7 @@
   Pull Clojure data structure to be JSON serialized, the bucket name and the bucket path."
   []
   (go-loop [[data bucket-name remote-name] (<! upload-chan)]
+    (l/info "Background upload" remote-name)
     (upload-as-json data bucket-name remote-name)))
 
 (defn download-json-file
@@ -168,23 +175,6 @@
 
 (defn view-date-prefix-cached [args] (get-cached (path-view-date-prefix args) view-date-prefix args))
 
-(defn view-date-source-work
-  "All activity for view, date, source, work.
-  Subfilter of the prefix-filtered view."
-  [args]
-  ;{:keys [view date source]}
-  (let [prefix (cr-doi/get-prefix (:work args))
-        data (:events (view-date-source-cached (assoc args :prefix prefix)))
-        doi (cr-doi/normalise-doi (:work args))]
-    (format-api-response
-      path-view-date-source-work
-      args
-      (filter #(and
-                (= (cr-doi/normalise-doi (:obj_id %)) doi)
-                (= (:source_id %) (:source args))) data))))
-
-(defn view-date-source-work-cached [args] (get-cached (path-view-date-source-work args) view-date-source-work args))
-
 (defn view-date-work
   "All activity for the view, date, source.
   Subfilter of the prefix-filtered view."
@@ -199,23 +189,57 @@
 
 (defn view-date-work-cached [args] (get-cached (path-view-date-work args) view-date-work args))
 
+(defn view-date-source-work
+  "All activity for view, date, source, work.
+  Subfilter of the prefix-filtered view."
+  [args]
+  ;{:keys [view date source]}
+  (let [prefix (cr-doi/get-prefix (:work args))
+        ; prefix is more restrictive than source, less data to deal with
+        data (:events (view-date-work-cached (assoc args :prefix prefix)))
+        doi (cr-doi/normalise-doi (:work args))]
+    (format-api-response
+      path-view-date-source-work
+      args
+      (filter #(and
+                (= (cr-doi/normalise-doi (:obj_id %)) doi)
+                (= (:source_id %) (:source args))) data))))
+
+(defn view-date-source-work-cached [args] (get-cached (path-view-date-source-work args) view-date-source-work args))
+
+(defn try-parse-date
+  "Parse date or nil on failure."
+  [date-str]
+  (try
+    (clj-time-format/parse ymd date-str)
+    (catch Exception _ nil)))
+
 (defresource query
   [artifact-f args]
   :available-media-types ["application/json"]
+  :malformed? (fn [ctx]
+                (let [date (:date args)
+                      parsed-date (and date (try-parse-date date))
+                      view-ok (#{"collected" "occurred"} (:view args))]
+                [(not (and date parsed-date view-ok))
+                  {::parsed-date parsed-date}]))
   :exists? (fn [ctx]
             ; drop leading slash
             (let [url-path (.substring (or (-> ctx :request :uri) "") 1)
                   
-                  ; result (get-cached url-path artifact-f args)
                   result (artifact-f args)
 
-                  ]
-              [result {::result result}]))
+                  date-ok (and
+                            (clj-time/after? (::parsed-date ctx) (earliest-date))
+                            (clj-time/before? (::parsed-date ctx) (latest-date)))]
+              [(and date-ok result) {::result result}]))
+
   :handle-ok (fn [ctx]
                 (::result ctx))
+
   :handle-not-found (fn [ctx]
                       {"meta"
-                        {"status" "ok"
+                        {"status" "error"
                          "message-type" "event-list"
                          "total" 0
                          "total-pages" 1
