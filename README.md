@@ -9,13 +9,13 @@ Experimental service to serve the Event Data Query API from AWS S3, and to cache
  - earliest date
  - pre conditions
  - option to exclude sources
+ - may need extra error handling in s3 connection
 
  
 ## Config keys
 
     :server-port
     :service-base
-    :archive-bucket
     :query-data-bucket
     :s3-access-key-id
     :s3-secret-access-key

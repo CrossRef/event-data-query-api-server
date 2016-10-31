@@ -1,6 +1,7 @@
 (ns event-data-query-api-server.core
   (:require [org.httpkit.server :as server])
-  (:require [clojure.data.json :as json])
+  (:require [clojure.data.json :as json]
+            [clojure.core.async :refer [chan <! >!! go-loop dropping-buffer]])
   (:require [clojure.tools.logging :as l])
   (:require [config.core :refer [env]])
   (:require [clj-time.core :as clj-time]
@@ -11,8 +12,7 @@
             [ring.middleware.params :as middleware-params]
             [ring.middleware.resource :as middleware-resource]
             [ring.middleware.content-type :as middleware-content-type]
-            [liberator.core :refer [defresource]]
-            )
+            [liberator.core :refer [defresource]])
   (:import [com.amazonaws.services.s3 AmazonS3 AmazonS3Client]
            [com.amazonaws.auth BasicAWSCredentials]
            [com.amazonaws.services.s3.model GetObjectRequest PutObjectRequest ObjectMetadata])
@@ -26,7 +26,6 @@
 
 (defn next-date-str [date-str]
   (clj-time-format/unparse ymd (clj-time/plus (clj-time-format/parse ymd date-str) (clj-time/days 1))))
-
 
 (defn get-aws-client
   []
@@ -48,6 +47,17 @@
           _ (.setContentLength metadata (alength bytes))
           request (new PutObjectRequest bucket-name remote-name (new java.io.ByteArrayInputStream bytes) metadata)]
       (.putObject @aws-client request))))
+
+; A channel for uploading cached results in the background.
+; Can be dropping because uploads are an optimisation, not on the critical path.
+(def upload-chan (chan (dropping-buffer 1024)))
+
+(defn run-uploads-background
+  "Start running uploads in the background.
+  Pull Clojure data structure to be JSON serialized, the bucket name and the bucket path."
+  []
+  (go-loop [[data bucket-name remote-name] (<! upload-chan)]
+    (upload-as-json data bucket-name remote-name)))
 
 (defn download-json-file
   "Download a JSON file from S3 and return parsed."
@@ -78,7 +88,7 @@
 
     ; if we couldn't find it, save it in S3
     (when (and (not cached) generated-result)
-      (upload-as-json generated-result (:query-data-bucket env) url-path))
+      (>!! upload-chan [generated-result (:query-data-bucket env) url-path]))
   result))
 
 
@@ -223,16 +233,15 @@
 
 (def app
   (-> app-routes
-    
      middleware-params/wrap-params
      (middleware-resource/wrap-resource "public")
-     (middleware-content-type/wrap-content-type)
-     
-     ))
+     (middleware-content-type/wrap-content-type)))
 
 (defn run []
   (let [port (Integer/parseInt (:server-port env))]
     (l/info "Start server on " port)
+    ; a few background processes in case of peak load
+    (dotimes [_ 10] (run-uploads-background))
     (server/run-server app {:port port}))
   (.join (Thread/currentThread)))
 
