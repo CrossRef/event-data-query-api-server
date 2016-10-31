@@ -33,6 +33,9 @@
 (defn next-date-str [date-str]
   (clj-time-format/unparse ymd (clj-time/plus (clj-time-format/parse ymd date-str) (clj-time/days 1))))
 
+; Future of a set of source ids to exclude. 
+(def exclude-source-ids (future (set (.split (or (:exclude-source-ids env) "") ","))))
+
 (defn get-aws-client
   []
   (new AmazonS3Client (new BasicAWSCredentials (:s3-access-key-id env) (:s3-secret-access-key env))))
@@ -144,11 +147,12 @@
   "All activity for the view, date.
   This is the lowest common denomenator."
   [args]
-  ; ignoring view at the moment
-  (format-api-response
-    path-view-date
-    args
-    (download-query-json-file (str (:view args) "/" (:date args) "/events-base.json"))))
+  (let [events (download-query-json-file (str (:view args) "/" (:date args) "/events-base.json"))
+        filtered (remove #(@exclude-source-ids (:source_id %)) events)]
+    (format-api-response
+      path-view-date
+      args
+      filtered)))
 
 (defn view-date-cached [args] (get-cached (path-view-date args) view-date args))
 
