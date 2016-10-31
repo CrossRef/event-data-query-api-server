@@ -149,6 +149,7 @@
   [args]
   (let [events (download-query-json-file (str (:view args) "/" (:date args) "/events-base.json"))
         filtered (remove #(@exclude-source-ids (:source_id %)) events)]
+        (prn "events" (count events) "filtered" (count filtered))
     (format-api-response
       path-view-date
       args
@@ -259,11 +260,17 @@
   (GET "/:view/:date/sources/:source/works/:work{.*?}/events.json" [view date source work] (query view-date-source-work-cached {:view view :date date :source source :work work}))
   (GET "/:view/:date/works/:work{.*?}/events.json" [view date work] (query view-date-work-cached {:view view :date date :work work})))
 
+(defn wrap-cors [handler]
+  (fn [request]
+    (let [response (handler request)]
+      (assoc-in response [:headers "Access-Control-Allow-Origin"] "*"))))
+
 (def app
   (-> app-routes
      middleware-params/wrap-params
      (middleware-resource/wrap-resource "public")
-     (middleware-content-type/wrap-content-type)))
+     (middleware-content-type/wrap-content-type)
+     (wrap-cors)))
 
 (defn run []
   (let [port (Integer/parseInt (:server-port env))]
