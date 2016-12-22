@@ -1,8 +1,10 @@
 (ns event-data-query-api-server.core
-  (:require [org.httpkit.server :as server])
+  (:require [org.httpkit.server :as server]
+            [org.httpkit.client :as client]
+            [event-data-common.jwt :as jwt])
   (:require [clojure.data.json :as json]
             [clojure.core.async :refer [chan <! >!! go-loop dropping-buffer]])
-  (:require [clojure.tools.logging :as l])
+  (:require [clojure.tools.logging :as log])
   (:require [config.core :refer [env]])
   (:require [clj-time.core :as clj-time]
             [clj-time.format :as clj-time-format]
@@ -12,12 +14,15 @@
             [ring.middleware.params :as middleware-params]
             [ring.middleware.resource :as middleware-resource]
             [ring.middleware.content-type :as middleware-content-type]
-            [liberator.core :refer [defresource]])
+            [liberator.core :refer [defresource]]
+            [liberator.representation :as representation]
+            [ring.util.response :as ring-response])
   (:import [com.amazonaws.services.s3 AmazonS3 AmazonS3Client]
            [com.amazonaws.auth BasicAWSCredentials]
            [com.amazonaws.services.s3.model GetObjectRequest PutObjectRequest ObjectMetadata])
   (:gen-class))
 
+(def event-data-homepage "http://eventdata.crossref.org/guide")
 
 (def ymd (clj-time-format/formatter "yyyy-MM-dd"))
 
@@ -38,14 +43,14 @@
 
 (defn get-aws-client
   []
-  (new AmazonS3Client (new BasicAWSCredentials (:s3-access-key-id env) (:s3-secret-access-key env))))
+  (new AmazonS3Client (new BasicAWSCredentials (:s3-key env) (:s3-secret env))))
 
 (def aws-client (delay (get-aws-client)))
 
 (defn upload-as-json
   "Upload a stream, return true if it worked."
   [structure bucket-name remote-name]
-  (l/info "Uploading to" bucket-name remote-name)
+  (log/info "Uploading to" bucket-name remote-name)
   (let [^java.io.ByteArrayOutputStream buffer (new java.io.ByteArrayOutputStream)
         stream (new java.io.OutputStreamWriter buffer)]
     (json/write structure stream)
@@ -65,14 +70,19 @@
   "Start running uploads in the background.
   Pull Clojure data structure to be JSON serialized, the bucket name and the bucket path."
   []
+  (log/info "Starting background uploads")
   (go-loop [[data bucket-name remote-name] (<! upload-chan)]
-    (l/info "Background upload" remote-name)
+    (log/info "Background upload" remote-name)
     (upload-as-json data bucket-name remote-name)))
+
+; Empty token is enough to connect.
+(def jwt-signer (delay (jwt/build (:jwt-secrets env))))
+(def jwt-token (delay (jwt/sign @jwt-signer {})))
 
 (defn download-json-file
   "Download a JSON file from S3 and return parsed."
   [bucket-name remote-name]
-  (l/info "Downloading from " bucket-name remote-name)
+  (log/info "Downloading from " bucket-name remote-name)
   (when
     (.doesObjectExist @aws-client bucket-name remote-name)
       (let [request (new GetObjectRequest bucket-name remote-name)
@@ -82,7 +92,17 @@
         (.close obj)
         result)))
 
-(def download-query-json-file (partial download-json-file (:query-data-bucket env)))
+(defn download-event-bus
+  "Download from the Event Bus. Request is JWT authenticated."
+  [url]
+  (log/info "Downloading from Event Bus" url)
+  (let [response @(client/get url {:as :stream
+                                   :headers {"Authorization" (str "Bearer " @jwt-token)}
+                                   :timeout 120000})
+        body (:body response)]
+    (when (and body (= 200 (:status response))) (json/read (clojure.java.io/reader body) :key-fn keyword))))
+
+(def download-query-json-file (partial download-json-file (:s3-bucket-name env)))
 
 (defn get-cached
   "Cache the function and arg dict"
@@ -98,7 +118,8 @@
 
     ; if we couldn't find it, save it in S3
     (when (and (not cached) generated-result)
-      (>!! upload-chan [generated-result (:query-data-bucket env) url-path]))
+      (log/info "Enqueue cache:" url-path)
+      (>!! upload-chan [generated-result (:s3-bucket-name env) url-path]))
   result))
 
 
@@ -147,9 +168,10 @@
   "All activity for the view, date.
   This is the lowest common denomenator."
   [args]
-  (let [events (download-query-json-file (str (:view args) "/" (:date args) "/events-base.json"))
+  ; Top-level comes directly from the Event Bus.
+  (let [events-response (download-event-bus (str (:event-bus-base env) "/events/live-archive/" (:date args)))
+        events (:events events-response)
         filtered (remove #(@exclude-source-ids (:source_id %)) events)]
-        (prn "events" (count events) "filtered" (count filtered))
     (format-api-response
       path-view-date
       args
@@ -171,12 +193,13 @@
 (defn view-date-prefix
   "All activity for the view, date, prefix."
   [args]
-  ; {:keys [view date source]}
   (let [data (:events (view-date-cached args))]
     (format-api-response
       path-view-date-prefix
       args
-      (filter #(= (cr-doi/get-prefix (:obj_id %)) (:prefix args)) data))))
+      (filter #(when-let [obj-id (:obj_id %)]
+                 (= (cr-doi/get-prefix obj-id) (:prefix args)))
+              data))))
 
 (defn view-date-prefix-cached [args] (get-cached (path-view-date-prefix args) view-date-prefix args))
 
@@ -252,7 +275,16 @@
                         "events" []}))
 
 
+(defresource home
+  []
+  :available-media-types ["text/html"]
+  :handle-ok (fn [ctx]
+                (representation/ring-response
+                  (ring-response/redirect event-data-homepage))))
+
 (defroutes app-routes
+  (GET "/" [] (home))
+
   ; Standlone shows the content, but from within a standalone (e.g. PDF-linked) page.
   (GET "/:view/:date/events.json" [view date] (query view-date {:view view :date date}))
   (GET "/:view/:date/prefixes/:prefix/events.json" [view date prefix] (query view-date-prefix-cached {:view view :date date :prefix prefix}))
@@ -273,14 +305,12 @@
      (wrap-cors)))
 
 (defn run []
-  (let [port (Integer/parseInt (:server-port env))]
-    (l/info "Start server on " port)
+  (let [port (Integer/parseInt (:port env))]
+    (log/info "Start server on " port)
     ; a few background processes in case of peak load
     (dotimes [_ 10] (run-uploads-background))
     (server/run-server app {:port port}))
   (.join (Thread/currentThread)))
-
-
 
 (defn -main
   [& args]

@@ -7,6 +7,9 @@
                  [org.clojure/core.async "0.2.395"]
                  [yogthos/config "0.8"]
                  [org.clojure/tools.logging "0.3.1"]
+                 [org.apache.logging.log4j/log4j-api "2.7"]
+                 [org.apache.logging.log4j/log4j-core "2.7"]
+
                  [org.clojure/tools.nrepl "0.2.12"]
                  [com.amazonaws/aws-java-sdk "1.11.49"]
                  ; This is required to make AWS and HTTP-kit and friends play nicely.
@@ -24,7 +27,8 @@
                  [overtone/at-at "1.2.0"]
                  [robert/bruce "0.8.0"]
                  [compojure "1.5.1"]
-                 [crossref-util "0.1.13"]]
+                 [crossref-util "0.1.13"]
+                 [event-data-common "0.1.9"]]
   :main ^:skip-aot event-data-query-api-server.core
   :java-source-paths ["src-java"]
   :target-path "target/%s"

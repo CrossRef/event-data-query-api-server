@@ -1,0 +1,42 @@
+version: '2'
+services:
+
+  redis:
+    image: redis
+
+  qcstatus:
+    image: crossref/event-data-status:0.1.2
+    expose:
+     - "8003"
+    ports:
+     - "8003:8003"
+    depends_on:
+     - redis
+    environment:
+     - REDIS_HOST=redis
+     - REDIS_PORT=6379
+     - REDIS_DB=0
+     - PORT=8003
+     - JWT_SECRETS=TEST,TEST2
+    command: "lein run"
+
+  test:
+    depends_on:
+     - redis
+     - qcstatus
+    build: .
+    ports:
+     - '8100:8100'
+    volumes:
+     - .:/usr/src/app
+     - ./.m2-cache:/root/.m2
+    environment:
+     - EVENT_BUS_BASE=http://138.201.202.133:8002
+     - SERVICE_BASE=http://localhost:8100/
+     - S3_KEY=${S3_KEY}
+     - S3_SECRET=${S3_SECRET}
+     - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+     - S3_REGION_NAME=${S3_REGION_NAME}
+     - PORT=8100
+     - JWT_SECRETS=TEST,TEST2
+     - STATUS_SERVICE=http://rcstatus:8003

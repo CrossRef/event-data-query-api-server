@@ -10,3 +10,6 @@ pom.xml.asc
 .hgignore
 .hg/
 config
+.env
+.m2-cache
+
