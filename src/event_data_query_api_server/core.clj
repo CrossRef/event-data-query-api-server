@@ -22,7 +22,7 @@
            [com.amazonaws.services.s3.model GetObjectRequest PutObjectRequest ObjectMetadata])
   (:gen-class))
 
-(def event-data-homepage "http://eventdata.crossref.org/guide")
+(def event-data-homepage "https://www.crossref.org/services/event-data")
 
 (def ymd (clj-time-format/formatter "yyyy-MM-dd"))
 
@@ -77,7 +77,7 @@
 
 ; Empty token is enough to connect.
 (def jwt-signer (delay (jwt/build (:jwt-secrets env))))
-(def jwt-token (delay (jwt/sign @jwt-signer {})))
+(def jwt-token (delay (jwt/sign @jwt-signer {"sub" "*"})))
 
 (defn download-json-file
   "Download a JSON file from S3 and return parsed."
@@ -99,8 +99,15 @@
   (let [response @(client/get url {:as :stream
                                    :headers {"Authorization" (str "Bearer " @jwt-token)}
                                    :timeout 120000})
-        body (:body response)]
-    (when (and body (= 200 (:status response))) (json/read (clojure.java.io/reader body) :key-fn keyword))))
+        body (:body response)
+        status (:status response)
+        parsed (when (and body (= 200 status))
+                 (json/read (clojure.java.io/reader body) :key-fn keyword))]
+    
+    (when-not (= 200 (:status response))
+      (log/error "Error from Event Bus: status" status " url:" url)
+      (throw (new Exception "Internal error connecting to Event Bus.")))
+    parsed))
 
 (def download-query-json-file (partial download-json-file (:s3-bucket-name env)))
 

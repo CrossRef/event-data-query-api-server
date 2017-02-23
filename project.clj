@@ -1,4 +1,4 @@
-(defproject event-data-query-api-server "0.0.1"
+(defproject event-data-query-api-server "0.0.2"
   :description "Serve the Event Data Query API"
   :url "http://eventdata.crossref.org"
   :license {:name "The MIT License (MIT)"
