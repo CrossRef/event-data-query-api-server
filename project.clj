@@ -1,4 +1,4 @@
-(defproject event-data-query-api-server "0.0.3"
+(defproject event-data-query-api-server "0.0.4"
   :description "Serve the Event Data Query API"
   :url "http://eventdata.crossref.org"
   :license {:name "The MIT License (MIT)"
@@ -15,7 +15,9 @@
                  [org.apache.httpcomponents/httpclient "4.5.2"]
 
                  [javax/javaee-api "7.0"]
-                 [http-kit "2.1.18"]
+                 
+                 [clj-http "3.4.1"]
+                 [http-kit "2.2.0"]
                  [http-kit.fake "0.2.1"]
                  [liberator "0.14.1"]
                  [compojure "1.5.1"]
@@ -27,7 +29,7 @@
                  [robert/bruce "0.8.0"]
                  [compojure "1.5.1"]
                  [crossref-util "0.1.13"]
-                 [event-data-common "0.1.15"]]
+                 [event-data-common "0.1.16"]]
   :main ^:skip-aot event-data-query-api-server.core
   :java-source-paths ["src-java"]
   :target-path "target/%s"
