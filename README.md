@@ -1,7 +1,8 @@
 # Event Data Query API Server
 
-Service to serve the Event Data Query API from AWS S3, and to cache there.
+<img src="doc/logo.png" align="right" style="float: right">
 
+Service to serve the Event Data Query API from AWS S3, and to cache there. Provides querying and filtering of events in bulk.
 
 ## Usage
 
@@ -26,5 +27,5 @@ To run tests
 | `JWT_SECRETS`        | Comma-separated list of JTW Secrets |
 | `EVENT_BUS_BASE`     | Event Bus URL base                  |
 | `SERVICE_BASE`       | Public URL base of this service     |
-
+| `ARTIFACT_BASE`      | Public URL of Artifact registry     |
 

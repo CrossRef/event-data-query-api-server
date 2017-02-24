@@ -1,7 +1,8 @@
 (ns event-data-query-api-server.core
   (:require [org.httpkit.server :as server]
             [org.httpkit.client :as client]
-            [event-data-common.jwt :as jwt])
+            [event-data-common.jwt :as jwt]
+            [event-data-common.artifact :as artifact])
   (:require [clojure.data.json :as json]
             [clojure.core.async :refer [chan <! >!! go-loop dropping-buffer]])
   (:require [clojure.tools.logging :as log])
@@ -23,6 +24,38 @@
   (:gen-class))
 
 (def event-data-homepage "https://www.crossref.org/services/event-data")
+
+(def sourcelist-name
+  "Artifact name for our source list."
+  "crossref-sourcelist")
+
+(defn get-sourcelist
+  "Fetch a set of source_ids that we're allowed to serve."
+  []
+  (let [source-names (-> sourcelist-name artifact/fetch-latest-artifact-string (clojure.string/split #"\n") set)]
+    (log/info "Retrieved source names:" source-names)
+    source-names))
+
+; Load at startup. The list changes so infrequently that the server can be restarted when a new one is added.
+(def sourcelist (future (get-sourcelist)))
+
+(defn event-dois
+  "An Event may have a DOI in the subj or obj or neither. Return a set of normalized DOIs found in either position."
+  [event]
+  (let [subj_id (:subj_id event)
+        obj_id (:obj_id event)
+        subj_doi (when (cr-doi/well-formed subj_id) (cr-doi/normalise-doi subj_id))
+        obj_doi (when (cr-doi/well-formed obj_id) (cr-doi/normalise-doi obj_id))]
+    (set (filter identity [subj_doi obj_doi]))))
+
+(defn event-prefixes
+  "An Event may have a DOI in the subj or obj or neither. Return a set of DOI prefixes found in either position."
+  [event]
+  (let [subj_id (:subj_id event)
+        obj_id (:obj_id event)
+        subj_prefix (when (cr-doi/well-formed subj_id) (cr-doi/get-prefix subj_id))
+        obj_prefix (when (cr-doi/well-formed obj_id) (cr-doi/get-prefix obj_id))]
+    (set (filter identity [subj_prefix obj_prefix]))))
 
 (def ymd (clj-time-format/formatter "yyyy-MM-dd"))
 
@@ -73,7 +106,8 @@
   (log/info "Starting background uploads")
   (go-loop [[data bucket-name remote-name] (<! upload-chan)]
     (log/info "Background upload" remote-name)
-    (upload-as-json data bucket-name remote-name)))
+    (upload-as-json data bucket-name remote-name)
+    (log/info "Finished background upload" remote-name)))
 
 ; Empty token is enough to connect.
 (def jwt-signer (delay (jwt/build (:jwt-secrets env))))
@@ -95,16 +129,16 @@
 (defn download-event-bus
   "Download from the Event Bus. Request is JWT authenticated."
   [url]
-  (log/info "Downloading from Event Bus" url)
+  (log/info "Downloading from Event Bus" url "with auth" @jwt-token)
   (let [response @(client/get url {:as :stream
                                    :headers {"Authorization" (str "Bearer " @jwt-token)}
-                                   :timeout 120000})
+                                   :timeout 900000})
         body (:body response)
         status (:status response)
         parsed (when (and body (= 200 status))
                  (json/read (clojure.java.io/reader body) :key-fn keyword))]
-    
-    (when-not (= 200 (:status response))
+
+    (when-not (= 200 status)
       (log/error "Error from Event Bus: status" status " url:" url)
       (throw (new Exception "Internal error connecting to Event Bus.")))
     parsed))
@@ -204,8 +238,7 @@
     (format-api-response
       path-view-date-prefix
       args
-      (filter #(when-let [obj-id (:obj_id %)]
-                 (= (cr-doi/get-prefix obj-id) (:prefix args)))
+      (filter #((event-prefixes %) (:prefix args))
               data))))
 
 (defn view-date-prefix-cached [args] (get-cached (path-view-date-prefix args) view-date-prefix args))
@@ -220,7 +253,7 @@
     (format-api-response
       path-view-date-work
       args
-      (filter #(= (cr-doi/normalise-doi (:obj_id %)) doi) data))))
+      (filter #((event-dois %) doi) data))))
 
 (defn view-date-work-cached [args] (get-cached (path-view-date-work args) view-date-work args))
 
@@ -237,7 +270,7 @@
       path-view-date-source-work
       args
       (filter #(and
-                (= (cr-doi/normalise-doi (:obj_id %)) doi)
+                ((event-dois %) doi)
                 (= (:source_id %) (:source args))) data))))
 
 (defn view-date-source-work-cached [args] (get-cached (path-view-date-source-work args) view-date-source-work args))
@@ -270,7 +303,23 @@
               [(and date-ok result) {::result result}]))
 
   :handle-ok (fn [ctx]
-                (::result ctx))
+                (let [override-whitelist (= (get-in ctx [:request :params "whitelist"]) "false")
+                      experimental (= (get-in ctx [:request :params "experimental"]) "true")
+                      events (:events (::result ctx))
+
+                      ; Only keep whitelisted sources, unless override.
+                      filtered-whitelist (if override-whitelist
+                                           events
+                                           (filter #(@sourcelist (:source-id %)) events))
+                      
+                      ; Remove experimental results, unless overrirde.
+                      filtered-experimental (if experimental
+                                              filtered-whitelist
+                                              (remove :experimental filtered-whitelist))
+
+                      final-events filtered-experimental]
+                (log/info "Query override?" override-whitelist "experimental?" experimental "args" args)
+                (assoc (::result ctx) :events final-events)))
 
   :handle-not-found (fn [ctx]
                       {"meta"
@@ -293,7 +342,7 @@
   (GET "/" [] (home))
 
   ; Standlone shows the content, but from within a standalone (e.g. PDF-linked) page.
-  (GET "/:view/:date/events.json" [view date] (query view-date {:view view :date date}))
+  (GET "/:view/:date/events.json" [view date] (query view-date-cached {:view view :date date}))
   (GET "/:view/:date/prefixes/:prefix/events.json" [view date prefix] (query view-date-prefix-cached {:view view :date date :prefix prefix}))
   (GET "/:view/:date/sources/:source/events.json" [view date source] (query view-date-source-cached {:view view :date date :source source}))
   (GET "/:view/:date/sources/:source/works/:work{.*?}/events.json" [view date source work] (query view-date-source-work-cached {:view view :date date :source source :work work}))
