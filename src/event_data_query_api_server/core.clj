@@ -210,7 +210,7 @@
   This is the lowest common denomenator."
   [args]
   ; Top-level comes directly from the Event Bus.
-  (let [events-response (download-event-bus (str (:event-bus-base env) "/events/live-archive/" (:date args)))
+  (let [events-response (download-event-bus (str (:event-bus-base env) "/events/archive/" (:date args)))
         events (:events events-response)
         filtered (remove #(@exclude-source-ids (:source_id %)) events)]
     (format-api-response
