@@ -181,22 +181,15 @@
 (defn path-view-date-work [args]
   (str "" (:view args) "/" (:date args) "/works/" (:work args) "/events.json")) 
 
-(defn format-api-response 
-  "Format an API response complete with pagination etc."
+(defn assoc-pagination 
+  "Build into the start of an API response with pagination."
   [path-f args events]
-  
   (let [prev-date (prev-date-str (:date args))
         next-date (next-date-str (:date args))]
-    
     {:meta
-      {:status "ok"
-       :message-type "event-list"
-       :total (count events)
-       :total-pages 1
-       :page 1
-       :previous (str (:service-base env) (path-f (assoc args :date prev-date)))
-       :next (str (:service-base env) (path-f (assoc args :date next-date)))}
-     ; if we got a nil, send empty list.
+      {:previous-date (str (:service-base env) "/" (path-f (assoc args :date prev-date)))
+       :next-date (str (:service-base env) "/" (path-f (assoc args :date next-date)))}
+       ; if we got a nil, send empty list.
      :events (or events [])}))
 
 ; A slew of 'get artifact' functions. 
@@ -213,7 +206,7 @@
   (let [events-response (download-event-bus (str (:event-bus-base env) "/events/archive/" (:date args)))
         events (:events events-response)
         filtered (remove #(@exclude-source-ids (:source_id %)) events)]
-    (format-api-response
+    (assoc-pagination
       path-view-date
       args
       filtered)))
@@ -224,7 +217,7 @@
   "All activity for the view, date, source."
   [args]
   (let [data (:events (view-date-cached args))]
-    (format-api-response
+    (assoc-pagination
       path-view-date-source
       args
       (filter #(= (:source_id %) (:source args)) data))))
@@ -235,7 +228,7 @@
   "All activity for the view, date, prefix."
   [args]
   (let [data (:events (view-date-cached args))]
-    (format-api-response
+    (assoc-pagination
       path-view-date-prefix
       args
       (filter #((event-prefixes %) (:prefix args))
@@ -250,7 +243,7 @@
   (let [prefix (cr-doi/get-prefix (:work args))
         data (:events (view-date-prefix-cached (assoc args :prefix prefix)))
         doi (cr-doi/normalise-doi (:work args))]
-    (format-api-response
+    (assoc-pagination
       path-view-date-work
       args
       (filter #((event-dois %) doi) data))))
@@ -266,7 +259,7 @@
         ; prefix is more restrictive than source, less data to deal with
         data (:events (view-date-work-cached (assoc args :prefix prefix)))
         doi (cr-doi/normalise-doi (:work args))]
-    (format-api-response
+    (assoc-pagination
       path-view-date-source-work
       args
       (filter #(and
@@ -294,18 +287,22 @@
   :exists? (fn [ctx]
             ; drop leading slash
             (let [url-path (.substring (or (-> ctx :request :uri) "") 1)
-                  
-                  result (artifact-f args)
 
+                  result (artifact-f args)
                   date-ok (and
                             (clj-time/after? (::parsed-date ctx) (earliest-date))
                             (clj-time/before? (::parsed-date ctx) (latest-date)))]
               [(and date-ok result) {::result result}]))
 
   :handle-ok (fn [ctx]
-                (let [override-whitelist (= (get-in ctx [:request :params "whitelist"]) "false")
+                (let [query-string (get-in ctx [:request :query-string])
+                      override-whitelist (= (get-in ctx [:request :params "whitelist"]) "false")
                       experimental (= (get-in ctx [:request :params "experimental"]) "true")
-                      events (:events (::result ctx))
+                      
+                      ; Fetch base events for this request. We're going to do a bit more filtering.
+                      result (::result ctx)
+
+                      events (:events result)
 
                       ; Only keep whitelisted sources, unless override.
                       filtered-whitelist (if override-whitelist
@@ -319,7 +316,11 @@
 
                       final-events filtered-experimental]
                 (log/info "Query override?" override-whitelist "experimental?" experimental "args" args)
-                (assoc (::result ctx) :events final-events)))
+                (-> result
+                    (assoc :events final-events)
+                    (assoc-in [:meta :total] (count final-events))
+                    (assoc-in [:meta :previous-date] (str (-> result :meta :previous-date) (when query-string (str "?" query-string))))
+                    (assoc-in [:meta :next-date] (str (-> result :meta :next-date) (when query-string (str "?" query-string)))))))
 
   :handle-not-found (fn [ctx]
                       {"meta"

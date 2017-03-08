@@ -41,3 +41,4 @@ services:
      - PORT=8100
      - JWT_SECRETS=${JWT_SECRETS}
      - STATUS_SERVICE=http://rcstatus:8003
+     - SERVICE_BASE=http://localhost:8100

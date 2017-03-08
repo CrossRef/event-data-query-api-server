@@ -26,6 +26,6 @@ To run tests
 | `STATUS_SERVICE`     | Public URL of the Status service    |
 | `JWT_SECRETS`        | Comma-separated list of JTW Secrets |
 | `EVENT_BUS_BASE`     | Event Bus URL base                  |
-| `SERVICE_BASE`       | Public URL base of this service     |
+| `SERVICE_BASE`       | Public URL base of this service, not including slash. |
 | `ARTIFACT_BASE`      | Public URL of Artifact registry     |
 
