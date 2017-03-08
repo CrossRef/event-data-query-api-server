@@ -319,6 +319,10 @@
                 (-> result
                     (assoc :events final-events)
                     (assoc-in [:meta :total] (count final-events))
+                    (assoc-in [:meta :status] "ok")
+                    (assoc-in [:meta :message-type] "event-list")
+                    (assoc-in [:meta :total-pages] 1)
+                    (assoc-in [:meta :page] 1)
                     (assoc-in [:meta :previous-date] (str (-> result :meta :previous-date) (when query-string (str "?" query-string))))
                     (assoc-in [:meta :next-date] (str (-> result :meta :next-date) (when query-string (str "?" query-string)))))))
 
