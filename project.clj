@@ -1,4 +1,4 @@
-(defproject event-data-query-api-server "0.0.6"
+(defproject event-data-query-api-server "0.0.7"
   :description "Serve the Event Data Query API"
   :url "http://eventdata.crossref.org"
   :license {:name "The MIT License (MIT)"
@@ -15,7 +15,7 @@
                  [org.apache.httpcomponents/httpclient "4.5.2"]
 
                  [javax/javaee-api "7.0"]
-                 
+                 [clj-time "0.13.0"]
                  [clj-http "3.4.1"]
                  [http-kit "2.2.0"]
                  [http-kit.fake "0.2.1"]

@@ -59,6 +59,8 @@
 
 (def ymd (clj-time-format/formatter "yyyy-MM-dd"))
 
+(def full-format (:date-time clj-time-format/formatters))
+
 ; Dates for these ranges shouldn't be served.
 ; This allows a user to follow pagination links back in time blindly in the past.
 ; It also makes sure we don't serve up a response for data not yet collected (tomorrow).
@@ -291,13 +293,24 @@
                   result (artifact-f args)
                   date-ok (and
                             (clj-time/after? (::parsed-date ctx) (earliest-date))
-                            (clj-time/before? (::parsed-date ctx) (latest-date)))]
-              [(and date-ok result) {::result result}]))
+                            (clj-time/before? (::parsed-date ctx) (latest-date)))
+
+                  ; Nil or a real date.
+                  updated-since-str (get-in ctx [:request :params "updated-since"])
+
+                  updated-since-date (when updated-since-str (try-parse-date updated-since-str))
+                  
+                  ; It's OK to be nil, but if it isn't, then it must have parsed to a valid date.
+                  updated-since-date-ok (or (nil? updated-since-str) updated-since-date)]
+
+              [(and date-ok result updated-since-date-ok) {::result result ::updated-since-date updated-since-date}]))
 
   :handle-ok (fn [ctx]
                 (let [query-string (get-in ctx [:request :query-string])
                       override-whitelist (= (get-in ctx [:request :params "whitelist"]) "false")
                       experimental (= (get-in ctx [:request :params "experimental"]) "true")
+                      include-deleted (= (get-in ctx [:request :params "experimental"]) "true")
+                      updated-since-date (::updated-since-date ctx)
                       
                       ; Fetch base events for this request. We're going to do a bit more filtering.
                       result (::result ctx)
@@ -314,7 +327,18 @@
                                               filtered-whitelist
                                               (remove :experimental filtered-whitelist))
 
-                      final-events filtered-experimental]
+                      ; Remove deleted, unless we're filtering by updates.
+                      filtered-deleted (if updated-since-date
+                                          filtered-experimental
+                                          (remove #(= "deleted" (:updated %)) filtered-experimental))
+
+                      ; Include events only updated since the supplied date.
+                      ; Normally include all events that have updates. When this parameter is supplied, restrict Events to those that have updates, and they were since that day.
+                      filtered-update-date (if updated-since-date
+                                             (filter #(when-let [event-updated-date (:updated-date %)] (clj-time/after? (clj-time-format/parse full-format event-updated-date) updated-since-date)) filtered-deleted)
+                                             filtered-deleted)
+
+                      final-events filtered-update-date]
                 (log/info "Query override?" override-whitelist "experimental?" experimental "args" args)
                 (-> result
                     (assoc :events final-events)
